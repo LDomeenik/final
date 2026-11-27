@@ -492,7 +492,7 @@ P1은 경로·주요 파라미터·응답 필드를 정의한 뒤 구현하면�
 
 | 필드 | 필수 | 규칙 |
 | :--- | :---: | --- |
-| purchase_date | O | 오늘 이전 날짜 |
+| purchase_date | O | 오늘 또는 그 이전 날짜 (미래 날짜 불가) |
 | items[] | O | 캡처의 모든 capture_item을 빠짐없이 포함 |
 | items[].is_excluded | O | `true`면 나머지 필드 생략 가능 |
 | items[].ingredient_id | 제외 안 함이면 O | 표준 재료 |
@@ -626,10 +626,11 @@ P1은 경로·주요 파라미터·응답 필드를 정의한 뒤 구현하면�
 | storage | O | available_storages 안에서만, 현재와 다른 값 |
 | quantity | | 비우거나 남은 양 전부면 **통째로 이동** (P0), 일부면 **소분** (P1), presence 재료는 통째로만 |
 
-- **통째로 이동**: storage 변경, 소비기한 = 오늘 + 새 보관 위치 일수 (manual이면 유지), `storage_changed` 이벤트
+- **소비기한 계산**: 냉동으로 옮기면 오늘 + 냉동 일수, 그 외에는 MIN(현재 소비기한, 오늘 + 새 보관 위치 일수), manual이면 유지
+- **통째로 이동**: storage 변경, 위 규칙으로 소비기한 재계산, `storage_changed` 이벤트
 - **소분**: 원래 건의 수량·구매 가격을 줄이고, 옮긴 만큼 새 재고를 만듦
   - 새 건 가격 = 원래 가격 × (옮긴 수량 / 원래 처음 수량), 두 건의 가격 합은 원래 가격과 같음
-  - 새 건은 구매일이 같고, 소비기한은 오늘 + 새 보관 위치 일수, `parent_item_id`에 원래 건 연결
+  - 새 건은 구매일이 같고, 소비기한은 위 규칙으로 계산, `parent_item_id`에 원래 건 연결
   - 두 건 모두에 `split` 이벤트 기록, 다시 같은 칸으로 옮겨도 합치지 않음
 - 보관 위치 변경·소분은 처리 취소(INV-07) 대상이 아닙니다.
 
@@ -643,7 +644,8 @@ P1은 경로·주요 파라미터·응답 필드를 정의한 뒤 구현하면�
 ```
 
 - 통째로 이동하면 `new_item`은 `null`
-- **Errors**: `400 validation_error` (쓸 수 없는 보관 위치, 남은 양 초과, presence 재료 소분), `409 conflict` (active가 아님)
+- 임박 경고("상하지 않았는지 확인해 주세요")는 프론트가 `expiry.status`로 판단해 확인 창에 표시합니다.
+- **Errors**: `400 validation_error` (쓸 수 없는 보관 위치, 남은 양 초과, presence 재료 소분, 기한이 지난 재고를 냉동으로 이동), `409 conflict` (active가 아님)
 
 #### `POST /inventory-items/{item_id}/use-up/` · `POST /inventory-items/{item_id}/discard/`: 다 씀·버림 (INV-06)
 
@@ -962,7 +964,7 @@ P1은 경로·주요 파라미터·응답 필드를 정의한 뒤 구현하면�
 | `GET /reports/daily/` | date (기본 오늘) | used_value, expiring_used_value, wasted_value, shared_value, score_delta (금액이 음수로 계산되면 0으로 응답) |
 | `GET /reports/weekly/` | week_start (월요일, 기본 이번 주) | item_spend, order_discount, delivery_fee, used_value, wasted_value, shared_value, waste_rate, top_wasted[{ingredient_name, value}], prev_wasted_value, prev_item_spend, score{final_score, is_finalized, daily[{date, score}]} / 기록 없으면 has_data = false |
 | `GET /reports/monthly/` | month (`YYYY-MM`, 기본 이번 달) | item_spend, order_discount, delivery_fee, net_spend, wasted_value, purchase_cnt, missing_price_cnt |
-| `GET /scores/weekly/` | week_start (기본 이번 주) | current_score, gauge(0~100), is_full, daily[{date, score}], recent_events(5개) |
+| `GET /scores/weekly/` | week_start (기본 이번 주) | current_score, gauge(0~100), is_full, daily[{date, score}], recent_events(5개) / 그 주 점수 이벤트가 없으면 current_score = 50(기본 점수)으로 응답 |
 | `GET /users/me/score-events/` | week_start(선택), cursor | score_event_id, delta, reason, rule_code, created_at |
 | `GET /badges/` | — | code, name, description, icon, badge_type, earned_count, last_earned_at (못 받은 뱃지는 earned_count = 0) |
 
