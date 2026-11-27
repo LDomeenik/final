@@ -19,6 +19,9 @@
 확장 기능에서 사용할 테이블은 문서 마지막의 부록에 정리합니다.
 ```
 
+> **확정 범위**: P0 테이블(회원, 기준 데이터, 레시피, 입력, 재고, 추천, 점수의 기본 구조)은 첫 모델 PR에서 확정합니다.
+> 추천 로그의 JSONB 내용, 점수 규칙 값, 리포트 View, 인덱스, P1 테이블(커뮤니티·알림)은 구현하면서 조정하며, 바뀌면 같은 PR에서 이 문서를 함께 수정합니다.
+
 **설계 원칙**
 
 - **사용자는 처음부터 커스텀 User로 관리**
@@ -30,6 +33,7 @@
   - 재료 그룹(ingredient_group): 레시피 매칭 단위. 같은 그룹의 재료는 레시피에서 서로 대체 가능 (예: 우유 그룹)
 - **재고는 구매 건(lot) 단위로 저장**
   - 같은 재료라도 구매일이 다르면 소비기한이 다르므로 별도 행으로 저장하고, 화면에서만 재료별로 묶어서 표시
+  - 한 건의 일부만 보관 위치를 바꾸면(소분) 두 건으로 나누고, 나뉜 건에 원래 건을 기록
 - **레시피 분량은 텍스트로 보존하고, 차감량은 사용자가 선택**
   - 레시피 재료는 재료명·재료 그룹 매칭까지만 구조화하고 분량은 원문 텍스트로 저장
   - 완료 체크 시 재료별로 "다 씀 / 절반 / 조금 / 안 씀"을 선택하여 차감
@@ -90,9 +94,11 @@ Unique: email, nickname
 적재 규칙:
 	- AbstractUser의 username 필드는 사용하지 않음
 	- 비밀번호는 Django 해시로 저장 (확장 시 소셜 가입자는 사용할 수 없는 비밀번호로 설정)
+	- 로그인 토큰은 DRF 기본 토큰 테이블(authtoken_token)에 저장 (MVP는 만료 없음)
 	- 탈퇴 시 행을 삭제하지 않고 is_active = FALSE, withdrawn_at 기록,
 	  닉네임은 "탈퇴한 사용자#{id}"로 변경, 이메일·프로필 이미지·소개는 비움
 	- 비공개(is_public = FALSE)이면 피드 게시글과 점수는 팔로워에게만 노출 (나눔 게시글은 항상 공개)
+	- preferred_cuisines 값은 공공 레시피의 요리 종류(recipe.dish_type)와 같은 값을 사용 (밥 / 국&찌개 / 반찬 / 일품 / 후식)
 	- 점수·뱃지는 이 테이블에 저장하지 않고 weekly_score, user_badge에서 조회
 ```
 
@@ -105,7 +111,7 @@ Unique: email, nickname
 | **profile_image_path** | VARCHAR(300) | Y | | 프로필 이미지 경로 | 외부 스토리지 |
 | **bio** | VARCHAR(100) | Y | | 한 줄 소개 | |
 | **household_size** | SMALLINT | Y | | 가구 인원 | 추천 인분 참고 |
-| **preferred_cuisines** | JSONB | N | | 선호 요리 종류 | 예: ["korean", "western"], 기본값 [] |
+| **preferred_cuisines** | JSONB | N | | 선호 요리 종류 | 예: ["국&찌개", "반찬"], 기본값 [] |
 | **region_code** | VARCHAR(5) | Y | FK | 활동 지역 (시·군·구) | |
 | **is_public** | BOOLEAN | N | | 프로필 공개 여부 | 기본값 TRUE |
 | **is_active** | BOOLEAN | N | | 활성 여부 | 탈퇴 시 FALSE |
@@ -175,17 +181,23 @@ Unique: group_name
 	- 레시피 재료가 참조하는 매칭 단위
 	- 같은 그룹에 속한 표준 재료는 레시피에서 서로 대체 가능한 것으로 간주
 	- 레시피마다 대체 재료를 따로 정의하지 않아도 되도록 설계
+	- 냉장고 그림의 재료 그림(icon)과 칸 배치(category)의 기준
 
 적재 규칙:
 	- 레시피에서 부르는 일반적인 이름을 그룹명으로 사용 (예: 우유, 계란, 양파)
 	- 그룹 간 대체(버터 ↔ 마가린 등)는 MVP 범위에서 제외
+	- icon은 프론트 재료 그림의 키 (예: tofu, milk), 없으면 NULL로 두고 분류 기본 그림 사용
+	- 냉장 보관 재료의 칸 배치: category가 채소·과일이면 채소칸, 음료·소스·양념이면 도어, 나머지는 냉장 선반 (API에서 계산)
+	- is_featured = TRUE인 그룹을 비회원 시작 화면의 기본 재료 칩(20개 안팎)으로 노출
 ```
 
 | 컬럼명 | 타입 | NULL | Key | 설명 | 비고 |
 | :--- | --- | --- | --- | --- | --- |
 | **group_id** | BIGSERIAL | N | PK | 재료 그룹 식별자 | |
 | **group_name** | VARCHAR(50) | N | UQ | 그룹명 | 예: 우유 |
-| **category** | VARCHAR(30) | N | | 상위 분류 | 채소, 육류, 유제품, 양념 등 |
+| **category** | VARCHAR(30) | N | | 상위 분류 | 채소·과일, 육류, 유제품·계란, 음료·소스·양념 등 |
+| **icon** | VARCHAR(30) | Y | | 재료 그림 키 | 예: tofu, milk |
+| **is_featured** | BOOLEAN | N | | 시작 화면 기본 칩 여부 | 기본값 FALSE |
 | **created_at** | TIMESTAMPTZ | N | | 생성 시각 | |
 
 #### ingredient
@@ -207,7 +219,7 @@ Unique: ingredient_name
 적재 규칙:
 	- 소비기한 기준값 또는 기본 보관 위치가 다르면 별도 재료로 분리
 	- 기준값 출처를 expiry_basis로 구분 (mfds_ref: 식약처 참고값 / general: 일반 보관 기준 / adjusted: 사용 이력으로 보정)
-	- 해당 보관 방식이 적합하지 않은 경우 일수를 NULL로 둠 (예: 계란 냉동)
+	- 해당 보관 방식이 적합하지 않은 경우 일수를 NULL로 둠 (예: 계란 냉동) → 그 보관 위치로는 옮길 수 없음
 	- presence 재료(양념류)는 default_unit을 NULL로 두고 완료 체크 차감 대상에서 제외
 ```
 
@@ -290,7 +302,7 @@ RAG 검색을 위해 메뉴명과 재료 문자열을 임베딩하여 pgvector �
 | RCP_SEQ | recipe.source_recipe_id | |
 | RCP_NM | recipe.recipe_name | |
 | RCP_WAY2 | recipe.cooking_method | 끓이기, 찌기, 굽기 등 |
-| RCP_PAT2 | recipe.dish_type | 반찬, 국&찌개, 후식, 일품, 밥 등 |
+| RCP_PAT2 | recipe.dish_type | 반찬, 국&찌개, 후식, 일품, 밥 등 (user.preferred_cuisines와 같은 값) |
 | RCP_PARTS_DTLS | recipe_ingredient.raw_text (LLM 분리) | 원문 전체는 raw_payload에 보존 |
 | MANUAL01~20, MANUAL_IMG01~20 | recipe.steps | 빈 단계 제외, 순서대로 배열 |
 | ATT_FILE_NO_MAIN | recipe.image_url | https 변환 |
@@ -371,7 +383,7 @@ Foreign Key:
 그레인(1행 정의): 1 row = 1 레시피의 재료 1개
 
 설계 목적:
-	- 레시피 재료를 재료 그룹과 연결하여 보유 재료 표시("5개 중 4개 보유"), RAG 검색 키워드, 완료 체크 대상 재료 판별에 사용
+	- 레시피 재료를 재료 그룹과 연결하여 보유 재료 표시("5개 중 4개 보유"), RAG 검색 키워드, 완료 체크 대상 재료 판별, 비회원 레시피 매칭에 사용
 	- 분량은 화면 표시용 원문 텍스트로만 보존 (차감량은 완료 체크 시 사용자가 선택)
 
 적재 규칙:
@@ -432,8 +444,10 @@ Foreign Key: user_id → user.id
 
 적재 규칙:
 	- 이미지 파일은 외부 스토리지에 저장하고 경로만 저장
+	- 인식은 업로드 요청 안에서 동기로 처리 (서버 시간 제한 20초)
 	- status 흐름: uploaded → recognized → confirmed (실패 시 failed)
 	- 인식 실패 시 error_message를 저장하고 재처리 가능하도록 이미지는 보존
+	- 확인 화면의 수정 내용은 저장 시 한 번에 반영 (확정 전 중간 저장 없음)
 	- 주문 단위 금액(총 결제 금액, 할인, 배송비)은 품목에 배분하지 않고 이 테이블에만 저장
 	- 총 결제 금액은 품목 금액 합계와 비교하여 인식 누락 검증에 활용
 ```
@@ -525,7 +539,7 @@ Foreign Key:
 | 테이블명 | 설명 |
 | :--- | --- |
 | inventory_item | 사용자별 재고 현재 상태 (구매 건 단위) |
-| inventory_event | 재고 변경 이력 (등록, 차감, 보관 변경, 소진, 폐기, 나눔, 확인 응답, 취소) |
+| inventory_event | 재고 변경 이력 (등록, 차감, 보관 변경, 소분, 소진, 폐기, 나눔, 확인 응답, 취소) |
 
 ### 재고 데이터 테이블 명세
 
@@ -540,8 +554,9 @@ Foreign Key:
 	- user_id → user.id
 	- ingredient_id → ingredient.ingredient_id
 	- capture_item_id → capture_item.capture_item_id (NULL 허용)
+	- parent_item_id → inventory_item.item_id (NULL 허용)
 
-그레인(1행 정의): 1 row = 사용자 1명의 재료 구매 1건
+그레인(1행 정의): 1 row = 사용자 1명의 재료 구매 1건 (소분하면 나뉜 1건)
 
 Indexes:
 	- idx_inventory_user_status_expiry (user_id, status, expected_expiry_date): 임박 재료 조회용
@@ -559,9 +574,17 @@ Indexes:
 	- purchase_price는 capture_item.confirmed_price를 그대로 반영 (직접 추가 시 사용자 입력, 미입력 시 NULL)
 	- 남은 가치(remaining_value) = purchase_price × remaining_quantity / initial_quantity (쿼리로 계산)
 
+소분 규칙 (한 건의 일부만 보관 위치 변경):
+	- 원래 건: initial_quantity·remaining_quantity를 옮긴 수량만큼 줄이고, purchase_price를 새 건 가격만큼 줄임
+	- 새 건: 옮긴 수량으로 생성, purchase_price = 원래 가격 × (옮긴 수량 / 원래 initial_quantity)
+	  (두 건의 가격 합은 원래 가격과 같아서 식비 집계가 바뀌지 않음)
+	- 새 건의 purchase_date·capture_item_id는 원래 건과 같고, parent_item_id에 원래 건을 기록
+	- 두 건 모두에 split 이벤트를 남기며, 다시 같은 보관 위치로 옮겨도 합치지 않음
+	- presence 재료는 소분하지 않음
+
 소비기한 산정 규칙:
 	- 등록 시: purchase_date + 보관 위치별 일수 (ingredient.fridge_days 등)
-	- 보관 위치 변경 시: 변경일 + 새 보관 위치 일수
+	- 보관 위치 변경 시: 변경일 + 새 보관 위치 일수 (소분한 새 건도 같은 규칙)
 	- 개봉 시: MIN(현재 예상 소비기한, 개봉일 + opened_days)
 	- 사용자가 직접 날짜를 수정하면 expiry_source = manual로 표시하고 자동 재계산 대상에서 제외
 	- 임박 기준: 예상 소비기한까지 남은 일수가 3일 이하 (점수 규칙의 조건 값과 동일하게 관리)
@@ -573,6 +596,7 @@ Indexes:
 | **user_id** | BIGINT | N | FK | 사용자 | |
 | **ingredient_id** | BIGINT | N | FK | 표준 재료 | |
 | **capture_item_id** | BIGINT | Y | FK | 원본 인식 품목 | 직접 추가 시 NULL |
+| **parent_item_id** | BIGINT | Y | FK | 소분 전 원래 재고 | 소분한 새 건만 |
 | **purchase_date** | DATE | N | | 구매일 | |
 | **initial_quantity** | NUMERIC(10,2) | Y | | 최초 수량 | presence 재료는 NULL |
 | **remaining_quantity** | NUMERIC(10,2) | Y | | 남은 수량 | presence 재료는 NULL |
@@ -588,13 +612,16 @@ Indexes:
 | **created_at** | TIMESTAMPTZ | N | | 등록 시각 | |
 | **updated_at** | TIMESTAMPTZ | N | | 수정 시각 | |
 
-- **화면 표시 단계 (쿼리로 계산)**
+- **화면 표시 단계 (API에서 계산)**
 
 | 단계 | 기준 | 적용 대상 |
 | :--- | --- | --- |
 | 개수 표시 | remaining_quantity 그대로 표시 | quantity_mode = count |
 | 많음 / 반쯤 / 조금 | remaining / initial 비율 (0.6 이상 / 0.3 이상 / 0.3 미만) | quantity_mode = amount |
 | 있음 | status = active | quantity_mode = presence |
+
+- 사용자가 단계 버튼으로 남은 양을 고치면 처음 양의 80% / 50% / 20%로 저장합니다. (이미 그 단계 안이면 바꾸지 않음)
+- 냉장고 그림의 칸(zone)은 storage와 ingredient_group.category로 API에서 계산하며 저장하지 않습니다. (냉장고 안 칸끼리 끌어서 옮긴 위치도 저장하지 않음)
 
 #### inventory_event
 
@@ -608,6 +635,7 @@ Foreign Key:
 	- completion_id → recipe_completion.completion_id (NULL 허용)
 	- post_id → post.post_id (NULL 허용)
 	- reverted_event_id → inventory_event.event_id (NULL 허용)
+	- related_item_id → inventory_item.item_id (NULL 허용)
 
 그레인(1행 정의): 1 row = 재고 1건에 발생한 변경 1회
 
@@ -624,8 +652,9 @@ Indexes:
 	- event_type별 기록 내용
 		· created: 재고 등록
 		· consumed: 레시피 완료에 따른 차감 (completion_id, usage_level 기록)
-		· adjusted: 사용자의 수량 단계 수정
-		· storage_changed: 보관 위치 변경
+		· adjusted: 사용자의 남은 양 수정 (줄이기·늘리기)
+		· storage_changed: 보관 위치 변경 (구매 건 통째로)
+		· split: 소분 (원래 건과 새 건 모두에 기록, related_item_id로 상대 건 연결)
 		· opened: 개봉 처리
 		· used_up: 직접 다 씀 처리
 		· discarded: 버림 처리
@@ -639,10 +668,14 @@ Indexes:
 	- quantity_delta는 수량 변화량(차감은 음수)을 기록
 	- value_delta는 수량이 줄어드는 이벤트(consumed, adjusted, used_up, discarded, shared)에서
 	  purchase_price × (줄어든 수량 / initial_quantity)로 계산하여 발생 시점에 저장
+	- adjusted로 남은 양을 늘리면(처음 양까지만) 늘어난 만큼을 같은 식으로 계산해 value_delta를 음수로 기록
+	  (앞선 소진 기록을 바로잡는 것으로 보며, 리포트 합계에 그대로 포함, 점수에는 영향 없음)
+	- split은 소비가 아니므로 value_delta를 NULL로 두고, quantity_delta에 옮긴 수량(원래 건은 음수, 새 건은 양수)을 기록
 	- presence 재료는 수량 비율을 알 수 없으므로 used_up·discarded·shared 시 purchase_price 전액을 기록
 	- check_response로 used_up·discarded 응답을 받으면 해당 event_type의 이벤트를 함께 생성하여 금액 집계 기준을 하나로 유지
 	- check_response는 response 컬럼에 still_have / used_up / discarded 중 하나를 기록
 	- reverted는 원래 이벤트의 quantity_delta·value_delta를 반대 부호로 기록하고, 재고 상태를 원래대로 되돌림
+	  (취소 대상: consumed, adjusted, used_up, discarded / storage_changed·split·opened는 취소하지 않음)
 	- 이벤트는 수정·삭제하지 않음
 ```
 
@@ -653,9 +686,9 @@ Indexes:
 | **event_type** | VARCHAR(20) | N | | 이벤트 유형 | 적재 규칙 참고 |
 | **usage_level** | VARCHAR(10) | Y | | 사용량 선택 | all / half / little / count (consumed 시) |
 | **quantity_delta** | NUMERIC(10,2) | Y | | 수량 변화량 | |
-| **value_delta** | INT | Y | | 금액 변화량 (원) | 소비·폐기·나눔 금액 스냅샷 |
-| **storage_before** | VARCHAR(10) | Y | | 변경 전 보관 위치 | storage_changed 시 |
-| **storage_after** | VARCHAR(10) | Y | | 변경 후 보관 위치 | storage_changed 시 |
+| **value_delta** | INT | Y | | 금액 변화량 (원) | 소비·폐기·나눔 금액 스냅샷, 양을 늘리면 음수 |
+| **storage_before** | VARCHAR(10) | Y | | 변경 전 보관 위치 | storage_changed·split 시 |
+| **storage_after** | VARCHAR(10) | Y | | 변경 후 보관 위치 | storage_changed·split 시 |
 | **expiry_before** | DATE | Y | | 변경 전 예상 소비기한 | |
 | **expiry_after** | DATE | Y | | 변경 후 예상 소비기한 | |
 | **days_left** | SMALLINT | Y | | 이벤트 시점의 남은 일수 | 임박 소진 판단·분석용 |
@@ -663,6 +696,7 @@ Indexes:
 | **completion_id** | BIGINT | Y | FK | 연결된 레시피 완료 | consumed 시 |
 | **post_id** | BIGINT | Y | FK | 연결된 나눔 게시글 | shared 시 |
 | **reverted_event_id** | BIGINT | Y | FK | 취소 대상 이벤트 | reverted 시 |
+| **related_item_id** | BIGINT | Y | FK | 소분 상대 재고 | split 시 |
 | **created_at** | TIMESTAMPTZ | N | | 발생 시각 | |
 
 ---
@@ -679,6 +713,7 @@ Indexes:
 이후 개인화 랭킹 모델(CatBoost)의 학습 데이터로도 사용합니다.
 
 접속 시 띄우는 "오늘의 냉장고" 카드의 추천도 같은 테이블에 기록합니다.
+비회원 레시피 보기(시작 화면)는 키워드 매칭만 사용하며 기록을 남기지 않습니다.
 ```
 
 ### 추천 데이터 테이블 목록
@@ -769,8 +804,9 @@ Indexes:
 
 적재 규칙:
 	- rank는 LLM이 정한 최종 순서 (fallback이면 검색 순서)
+	- 오늘의 냉장고 카드는 실제로 보여준 레시피만 노출로 기록 (처음 1개, "다른 추천 보기"를 누를 때마다 다음 순위 1개)
 	- features에는 노출 시점의 매칭 재료 수, 임박 재료 수, 최소 남은 일수, 검색 유사도 등을 저장
-	- 사용자가 레시피 상세를 열면 is_clicked = TRUE
+	- 사용자가 추천 카드에서 레시피 상세로 이동하면 is_clicked = TRUE (클릭 기록 API)
 	- 완료 여부는 recipe_completion과 조인하여 판단
 ```
 
@@ -934,7 +970,7 @@ Indexes:
 적재 규칙:
 	- region_code 기본값은 작성자의 활동 지역
 	- 재고 목록에서 나눔 글을 등록하면 item_id를 연결
-	- trade_status 흐름: open(나눔중) → reserved(예약중) → done(완료), 완료 전에는 되돌릴 수 있음
+	- trade_status 흐름: open(나눔중) ↔ reserved(예약중) → done(완료), 완료 전에는 되돌릴 수 있고 완료 후에는 바꿀 수 없음
 	- done으로 변경되면 연결된 재고에 inventory_event(shared)를 생성하고 status = shared로 변경, 점수 반영
 	- 1:1 채팅, 위치 인증, 거래 후기는 확장 범위
 ```
@@ -962,7 +998,7 @@ Unique: (post_id, sort_order)
 
 적재 규칙:
 	- 게시글당 최대 5장 (애플리케이션에서 검증)
-	- 이미지 파일은 외부 스토리지에 저장하고 경로만 저장
+	- 이미지는 업로드 API로 먼저 저장하고, 게시글 작성 시 받은 경로만 저장
 ```
 
 | 컬럼명 | 타입 | NULL | Key | 설명 | 비고 |
@@ -1019,7 +1055,7 @@ Unique: (post_id, user_id)
 
 적재 규칙:
 	- 게시판에 따라 화면 표시만 다름 (feed: 좋아요 / share: 관심)
-	- 취소 시 행을 삭제 (반응은 이력 분석 대상이 아니므로 예외적으로 물리 삭제)
+	- 같은 API로 추가·취소를 토글하며, 취소 시 행을 삭제 (반응은 이력 분석 대상이 아니므로 예외적으로 물리 삭제)
 	- 댓글 반응은 범위에서 제외
 ```
 
@@ -1045,7 +1081,7 @@ Unique: (follower_id, following_id)
 
 적재 규칙:
 	- 자기 자신은 팔로우할 수 없음 (CHECK follower_id <> following_id)
-	- 언팔로우 시 행을 삭제
+	- 같은 API로 팔로우·언팔로우를 토글하며, 언팔로우 시 행을 삭제
 	- 비공개 계정도 MVP에서는 승인 없이 팔로우 가능 (팔로우 요청·승인은 확장 범위)
 ```
 
@@ -1095,13 +1131,14 @@ Unique: code
 설계 목적:
 	- 점수 규칙의 값(점수, 조건, 상한)을 코드 수정 없이 조정
 
-초기 규칙 (값은 테스트 후 조정):
+초기 규칙 (규칙별 점수·공식은 데이터 준비 단계에서 정하고, 테스트 후 조정):
 	- expiring_used: 임박 재료(남은 일수 ≤ 3일) 소진, 남은 일수가 적을수록 가중
-	- used_up: 재료 다 씀
+	- used_up: 재료 다 씀 (임박이 아닌 재료, 요리 완료로 남은 수량이 0이 된 경우 포함)
 	- shared_done: 나눔 완료
-	- discarded: 폐기 (폐기 금액 비례 감점)
+	- discarded: 폐기 (폐기 금액 비례 감점, 가격 미입력 재료는 기본 감점)
 	- neglected: 기한 경과 후 미확인 방치 (일 단위 감점, 재료 1건당 최대 3일)
 	- 공통: 하루 가점 상한 (예: +20점)
+	- 남은 양 수정(adjusted), 보관 위치 변경·소분에는 점수 없음
 ```
 
 | 컬럼명 | 타입 | NULL | Key | 설명 | 비고 |
@@ -1175,7 +1212,7 @@ Unique: (user_id, week_start)
 	- 주간 확정 점수를 보존하여 연속 달성 뱃지와 주간 리포트에 사용
 
 적재 규칙:
-	- 사용자의 그 주 첫 점수 이벤트 또는 월요일 배치에서 생성 (base_score = 50)
+	- 사용자의 그 주 첫 점수 이벤트에서 생성 (base_score = 50, 활동 없는 사용자의 빈 행은 만들지 않음)
 	- current_score = base_score + 그 주 score_event.delta 합계 (점수 이벤트 저장과 같은 트랜잭션에서 갱신)
 	- DB에는 실제 합계를 저장하고, 화면 게이지는 0~100으로 잘라서 표시 (100 초과 시 "만점 달성" 표시)
 	- 매주 월요일 배치에서 지난주 행을 확정(is_finalized = TRUE, final_score 기록)하고 뱃지 조건을 판정
@@ -1258,7 +1295,7 @@ Unique:
 ```
 알림 데이터는 서비스 내 알림을 저장하는 영역입니다.
 
-알림은 프론트엔드가 페이지 이동 시와 일정 주기(15~30초)마다 안 읽은 개수를 조회하는
+알림은 프론트엔드가 페이지 이동 시와 30초마다 안 읽은 개수를 조회하는
 폴링 방식으로 전달합니다. 실시간 전달(웹소켓)은 나눔 1:1 채팅과 함께 확장 범위로 둡니다.
 
 내 행동에 대한 즉시 피드백(점수 변화 등)은 알림이 아니라 해당 API 응답으로 전달하며,
@@ -1329,7 +1366,8 @@ Indexes:
 이벤트 발생 시점에 저장된 value_delta만을 사용하여,
 이후 수량이나 가격을 수정하더라도 과거 리포트 값이 바뀌지 않도록 합니다.
 집계 기준일은 구매 금액은 구매일(purchase_date), 소비·폐기·나눔은 이벤트 발생일(한국 시간)입니다.
-reverted 이벤트는 반대 부호로 기록되므로 합계에 그대로 포함하면 취소가 반영됩니다.
+reverted 이벤트와 남은 양을 늘린 adjusted 이벤트는 음수로 기록되므로 합계에 그대로 포함하면 반영됩니다.
+소분(split)은 두 건의 가격 합이 원래 가격과 같아 구매 금액 집계가 바뀌지 않습니다.
 ```
 
 ### 리포트 View 목록
@@ -1352,11 +1390,12 @@ reverted 이벤트는 반대 부호로 기록되므로 합계에 그대로 포�
 
 계산 기준:
 	- source: inventory_event, inventory_item, score_event
-	- used_value = SUM(value_delta) WHERE event_type IN ('consumed', 'used_up', 'adjusted') (취소 포함)
+	- used_value = SUM(value_delta) WHERE event_type IN ('consumed', 'used_up', 'adjusted') (취소·늘리기 포함)
 	- expiring_used_value = 위 조건 중 days_left ≤ 3인 이벤트의 value_delta 합계
 	- wasted_value = SUM(value_delta) WHERE event_type = 'discarded' (취소 포함)
 	- shared_value = SUM(value_delta) WHERE event_type = 'shared'
 	- score_delta = 해당 일 score_event.delta 합계
+	- 하루 합계가 음수로 계산되면(예: 어제 쓴 양을 오늘 늘림) View에는 그대로 두고 API 응답에서 0으로 표시
 ```
 
 | 컬럼명 | 설명 |
@@ -1416,6 +1455,7 @@ reverted 이벤트는 반대 부호로 기록되므로 합계에 그대로 포�
 	- net_spend = item_spend - order_discount + delivery_fee
 	- wasted_value = 해당 월 discarded 이벤트의 value_delta 합계
 	- purchase_price가 NULL인 재고는 item_spend에서 제외하고 missing_price_cnt로 별도 표시
+	- purchase_cnt는 소분으로 생긴 건(parent_item_id가 있는 건)을 제외하고 셈
 ```
 
 | 컬럼명 | 설명 |
@@ -1442,6 +1482,7 @@ reverted 이벤트는 반대 부호로 기록되므로 합계에 그대로 포�
 	- utilization_rate = (소진 금액 + 나눔 금액) / 구매 금액
 	- waste_rate = 폐기 금액 / 구매 금액
 	- avg_days_to_use_up = 구매일 → used_up 상태가 된 시점까지 평균 일수
+	- purchase_cnt는 소분으로 생긴 건을 제외하고 셈
 ```
 
 | 컬럼명 | 설명 |
@@ -1482,7 +1523,7 @@ reverted 이벤트는 반대 부호로 기록되므로 합계에 그대로 포�
 region ─< user ─┬─< capture ─< capture_item ── inventory_item
                 │                                   │
                 ├─< inventory_item ─< inventory_event ─────────┐
-                │        │                │                     │
+                │        │  └─(parent_item_id: 소분)          │
                 │        │                └─< score_event >─ score_rule
                 │        │                        │
                 │        │                  weekly_score
@@ -1509,8 +1550,10 @@ user ─< notification
 ```
 
 - **재료 매칭 경로**: inventory_item → ingredient → ingredient_group ← recipe_ingredient
+- **비회원 매칭 경로**: 고른 ingredient_group → recipe_ingredient(group_id) → recipe (기록 없음)
 - **RAG 추천 경로**: inventory_item(임박) → recommendation_request(input_snapshot, candidates ← recipe.embedding) → recommendation_impression
 - **재고 차감 경로**: recipe_completion → (사용자 사용량 선택) → inventory_item(소비기한 빠른 순) → inventory_event(consumed, value_delta)
+- **소분 경로**: inventory_item(원래 건) → inventory_event(split) → inventory_item(새 건, parent_item_id)
 - **점수 경로**: inventory_event / share_detail(done) / 방치 배치 → score_event(score_rule 적용) → weekly_score → user_badge
 - **나눔 경로**: inventory_item → share_detail(item_id) → done → inventory_event(shared)
 - **피드 연결 경로**: recipe_completion → feed_detail(brag) / recipe(source = user) → feed_detail(recipe)
@@ -1679,6 +1722,7 @@ Unique: (from_unit, ingredient_id)
 | 기능 | 추가 내용 |
 | :--- | --- |
 | 소셜 로그인 (카카오 등) | social_account(provider, provider_uid, user_id) 테이블 추가, (provider, provider_uid) 유니크, 가입 직후 닉네임·이메일 입력 단계 |
+| 토큰 만료·JWT 전환 | DRF 토큰에 만료 기준 추가 또는 JWT로 전환 (토큰 테이블 대신 블랙리스트 테이블) |
 | 레시피 포크 | recipe.parent_recipe_id(NULL 허용 FK) 추가, 상세 화면에 원본 레시피 표시 |
 | 사용자 레시피 추천 포함 | 좋아요·완료 수 기준을 정해 recipe.is_recommendable = TRUE로 전환 후 임베딩 |
 | 나눔 1:1 채팅 | chat_room(share 게시글 × 참여자), chat_message 테이블 추가, Django Channels + Redis 기반 웹소켓 도입, 알림 전달도 웹소켓으로 전환 |
