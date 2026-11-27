@@ -36,6 +36,10 @@ ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=[])
 # Application definition
 
 INSTALLED_APPS = [
+    # third-party apps
+    "rest_framework",
+    "rest_framework.authtoken",
+    "corsheaders",
     "accounts",
     "django.contrib.admin",
     "django.contrib.auth",
@@ -46,6 +50,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -127,3 +132,25 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Custom User
 AUTH_USER_MODEL = "accounts.User"
+
+# CORS (Vue 개발 서버에서 오는 요청 허용)
+CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+
+# Django REST Framework
+REST_FRAMEWORK = {
+    # 요청 헤더의 "Authorization: Token <토큰>"으로 로그인한 사용자를 찾음
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.TokenAuthentication",
+    ],
+    # 기본은 로그인 필요, 비회원 API는 view에서 AllowAny로 따로 열어 줌
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    # 응답은 JSON만 (개발 중에는 브라우저용 API 화면도 함께)
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+        "rest_framework.renderers.BrowsableAPIRenderer",
+    ],
+    # 에러 응답을 {"error": {...}} 형식으로 통일
+    "EXCEPTITIOM_HANDLER": "common.exceptions.custom_exception_handler",
+}
