@@ -71,15 +71,15 @@
 
 | 테이블명 | 설명 |
 | :--- | --- |
-| user | 커스텀 User (로그인 정보 + 프로필) |
+| users | 커스텀 User (로그인 정보 + 프로필) |
 | region | 시·군·구 기준 목록 |
 
 ### 회원 데이터 테이블 명세
 
-#### user
+#### users
 
 ```
-테이블명: user (Django 커스텀 User, AbstractUser 상속)
+테이블명: users (Django 커스텀 User, AbstractUser 상속, `user`는 PostgreSQL 예약어라 복수형 사용)
 
 Primary Key: id
 
@@ -96,7 +96,7 @@ Unique: email, nickname
 	- 비밀번호는 Django 해시로 저장 (확장 시 소셜 가입자는 사용할 수 없는 비밀번호로 설정)
 	- 로그인 토큰은 DRF 기본 토큰 테이블(authtoken_token)에 저장 (MVP는 만료 없음)
 	- 탈퇴 시 행을 삭제하지 않고 is_active = FALSE, withdrawn_at 기록,
-	  닉네임은 "탈퇴한 사용자#{id}"로 변경, 이메일·프로필 이미지·소개는 비움
+	  닉네임은 "탈퇴한 사용자#{id}"로 변경, 이메일은 NULL, 프로필 이미지·소개는 빈 문자열로 비움
 	- 비공개(is_public = FALSE)이면 피드 게시글과 점수는 팔로워에게만 노출 (나눔 게시글은 항상 공개)
 	- preferred_cuisines 값은 공공 레시피의 요리 종류(recipe.dish_type)와 같은 값을 사용 (밥 / 국&찌개 / 반찬 / 일품 / 후식)
 	- 점수·뱃지는 이 테이블에 저장하지 않고 weekly_score, user_badge에서 조회
@@ -108,8 +108,8 @@ Unique: email, nickname
 | **email** | VARCHAR(254) | Y | UQ | 로그인 이메일 | 탈퇴 시 NULL |
 | **password** | VARCHAR(128) | N | | 비밀번호 해시 | Django 기본 |
 | **nickname** | VARCHAR(20) | N | UQ | 닉네임 | |
-| **profile_image_path** | VARCHAR(300) | Y | | 프로필 이미지 경로 | 외부 스토리지 |
-| **bio** | VARCHAR(100) | Y | | 한 줄 소개 | |
+| **profile_image_path** | VARCHAR(300) | N | | 프로필 이미지 경로 | 외부 스토리지, 없으면 빈 문자열 (기본값 '') |
+| **bio** | VARCHAR(100) | N | | 한 줄 소개 | 없으면 빈 문자열 (기본값 '') |
 | **household_size** | SMALLINT | Y | | 가구 인원 | 추천 인분 참고 |
 | **preferred_cuisines** | JSONB | N | | 선호 요리 종류 | 예: ["국&찌개", "반찬"], 기본값 [] |
 | **region_code** | VARCHAR(5) | Y | FK | 활동 지역 (시·군·구) | |
@@ -302,7 +302,7 @@ RAG 검색을 위해 메뉴명과 재료 문자열을 임베딩하여 pgvector �
 | RCP_SEQ | recipe.source_recipe_id | |
 | RCP_NM | recipe.recipe_name | |
 | RCP_WAY2 | recipe.cooking_method | 끓이기, 찌기, 굽기 등 |
-| RCP_PAT2 | recipe.dish_type | 반찬, 국&찌개, 후식, 일품, 밥 등 (user.preferred_cuisines와 같은 값) |
+| RCP_PAT2 | recipe.dish_type | 반찬, 국&찌개, 후식, 일품, 밥 등 (users.preferred_cuisines와 같은 값) |
 | RCP_PARTS_DTLS | recipe_ingredient.raw_text (LLM 분리) | 원문 전체는 raw_payload에 보존 |
 | MANUAL01~20, MANUAL_IMG01~20 | recipe.steps | 빈 단계 제외, 순서대로 배열 |
 | ATT_FILE_NO_MAIN | recipe.image_url | https 변환 |
@@ -325,7 +325,7 @@ RAG 검색을 위해 메뉴명과 재료 문자열을 임베딩하여 pgvector �
 
 Primary Key: recipe_id
 
-Foreign Key: author_id → user.id (NULL 허용)
+Foreign Key: author_id → users.id (NULL 허용)
 
 Unique: (source, source_recipe_id) — source = public인 행에만 적용 (부분 유니크 인덱스)
 
@@ -436,7 +436,7 @@ Foreign Key:
 
 Primary Key: capture_id
 
-Foreign Key: user_id → user.id
+Foreign Key: user_id → users.id
 
 설계 목적:
 	- 캡처 이미지 원본 경로와 인식 처리 상태를 관리
@@ -551,7 +551,7 @@ Foreign Key:
 Primary Key: item_id
 
 Foreign Key:
-	- user_id → user.id
+	- user_id → users.id
 	- ingredient_id → ingredient.ingredient_id
 	- capture_item_id → capture_item.capture_item_id (NULL 허용)
 	- parent_item_id → inventory_item.item_id (NULL 허용)
@@ -737,7 +737,7 @@ Indexes:
 Primary Key: request_id
 
 Foreign Key:
-	- user_id → user.id
+	- user_id → users.id
 	- cached_from → recommendation_request.request_id (NULL 허용)
 
 Indexes:
@@ -793,7 +793,7 @@ Primary Key: impression_id
 
 Foreign Key:
 	- request_id → recommendation_request.request_id
-	- user_id → user.id
+	- user_id → users.id
 	- recipe_id → recipe.recipe_id
 
 그레인(1행 정의): 1 row = 1회 추천 요청에서 노출된 레시피 1개
@@ -834,7 +834,7 @@ Indexes:
 Primary Key: completion_id
 
 Foreign Key:
-	- user_id → user.id
+	- user_id → users.id
 	- recipe_id → recipe.recipe_id
 	- impression_id → recommendation_impression.impression_id (NULL 허용)
 
@@ -895,7 +895,7 @@ Foreign Key:
 
 Primary Key: post_id
 
-Foreign Key: author_id → user.id
+Foreign Key: author_id → users.id
 
 Indexes:
 	- idx_post_board_time (board, is_deleted, created_at): 게시판별 최신순 목록 조회용
@@ -908,7 +908,7 @@ Indexes:
 	- board로 게시판을 구분 (feed / share)
 	- 게시글 1건마다 board에 맞는 상세 테이블 1행을 함께 생성
 	- 삭제 시 행을 지우지 않고 is_deleted = TRUE, deleted_at 기록 (목록·상세에서 제외, 댓글은 보존)
-	- 피드 게시글의 공개 범위는 작성자의 user.is_public을 따름 (나눔 게시글은 항상 공개)
+	- 피드 게시글의 공개 범위는 작성자의 users.is_public을 따름 (나눔 게시글은 항상 공개)
 ```
 
 | 컬럼명 | 타입 | NULL | Key | 설명 | 비고 |
@@ -1021,7 +1021,7 @@ Primary Key: comment_id
 
 Foreign Key:
 	- post_id → post.post_id
-	- author_id → user.id
+	- author_id → users.id
 	- parent_id → comment.comment_id (NULL 허용)
 
 Indexes:
@@ -1052,7 +1052,7 @@ Primary Key: reaction_id
 
 Foreign Key:
 	- post_id → post.post_id
-	- user_id → user.id
+	- user_id → users.id
 
 Unique: (post_id, user_id)
 
@@ -1077,8 +1077,8 @@ Unique: (post_id, user_id)
 Primary Key: follow_id
 
 Foreign Key:
-	- follower_id → user.id
-	- following_id → user.id
+	- follower_id → users.id
+	- following_id → users.id
 
 Unique: (follower_id, following_id)
 
@@ -1163,7 +1163,7 @@ Unique: code
 Primary Key: score_event_id
 
 Foreign Key:
-	- user_id → user.id
+	- user_id → users.id
 	- rule_id → score_rule.rule_id
 	- inventory_event_id → inventory_event.event_id (NULL 허용)
 	- post_id → post.post_id (NULL 허용)
@@ -1206,7 +1206,7 @@ Indexes:
 
 Primary Key: weekly_score_id
 
-Foreign Key: user_id → user.id
+Foreign Key: user_id → users.id
 
 Unique: (user_id, week_start)
 
@@ -1270,7 +1270,7 @@ Unique: code
 Primary Key: user_badge_id
 
 Foreign Key:
-	- user_id → user.id
+	- user_id → users.id
 	- badge_id → badge.badge_id
 
 Unique:
@@ -1321,8 +1321,8 @@ Unique:
 Primary Key: notification_id
 
 Foreign Key:
-	- recipient_id → user.id
-	- actor_id → user.id (NULL 허용)
+	- recipient_id → users.id
+	- actor_id → users.id (NULL 허용)
 
 Unique: dedup_key (NULL 허용)
 
@@ -1523,20 +1523,20 @@ reverted 이벤트와 남은 양을 늘린 adjusted 이벤트는 음수로 기�
 ## 11. 테이블 관계 요약
 
 ```
-region ─< user ─┬─< capture ─< capture_item ── inventory_item
-                │                                   │
-                ├─< inventory_item ─< inventory_event ─────────┐
-                │        │  └─(parent_item_id: 소분)          │
-                │        │                └─< score_event >─ score_rule
-                │        │                        │
-                │        │                  weekly_score
-                │        │
+region ─< users ─┬─< capture ─< capture_item ── inventory_item
+                 │                                   │
+                 ├─< inventory_item ─< inventory_event ─────────┐
+                 │        │  └─(parent_item_id: 소분)          │
+                 │        │                └─< score_event >─ score_rule
+                 │        │                        │
+                 │        │                  weekly_score
+                 │        │
 ingredient_group ─< ingredient ─< product_alias
        │                 └─< inventory_item
        │
 recipe ─< recipe_ingredient
    │
-   ├─< recommendation_impression >── recommendation_request ── user
+   ├─< recommendation_impression >── recommendation_request ── users
    │            │
    ├─< recipe_completion ─< inventory_event (consumed)
    │            │
@@ -1545,9 +1545,9 @@ recipe ─< recipe_ingredient
                               ├─< comment
                               └─< post_reaction
 
-user ─< follow >─ user
-user ─< user_badge >─ badge
-user ─< notification
+users ─< follow >─ users
+users ─< user_badge >─ badge
+users ─< notification
 
 (─< : 1 대 N 관계)
 ```
@@ -1583,7 +1583,7 @@ user ─< notification
 
 Primary Key: plan_id
 
-Foreign Key: user_id → user.id
+Foreign Key: user_id → users.id
 
 Unique: (user_id, week_start_date, version)
 
@@ -1730,7 +1730,7 @@ Unique: (from_unit, ingredient_id)
 | 사용자 레시피 추천 포함 | 좋아요·완료 수 기준을 정해 recipe.is_recommendable = TRUE로 전환 후 임베딩 |
 | 나눔 1:1 채팅 | chat_room(share 게시글 × 참여자), chat_message 테이블 추가, Django Channels + Redis 기반 웹소켓 도입, 알림 전달도 웹소켓으로 전환 |
 | 보관·손질 Q&A 게시판 | post.board에 qna 추가, qna_detail(채택 답변 등) 테이블, 전문가 뱃지 |
-| 동네 랭킹 | user.region_code × weekly_score 집계 View |
+| 동네 랭킹 | users.region_code × weekly_score 집계 View |
 | 알림 설정·묶음 표시 | notification_setting(user × notif_type) 테이블, 반응 알림 묶음 처리 |
 | 팔로우 요청·승인 | follow에 status(requested / accepted) 추가 |
 | 개인화 랭킹 모델 | recommendation_impression.features + 클릭·완료 라벨로 CatBoost 학습 |
