@@ -16,7 +16,7 @@
 
 - [문서](#문서)
 - [화면 설계](#화면-설계)
-- [개발 환경 (구성 예정)](#개발-환경-구성-예정)
+- [개발 환경](#개발-환경)
 - [개발 방식](#개발-방식)
 - [브랜치 전략](#브랜치-전략)
 - [커밋 규칙](#커밋-규칙)
@@ -62,35 +62,161 @@
 
 ---
 
-## 개발 환경 (구성 예정)
+## 개발 환경
 
-> 아직 개발 환경을 만들기 전입니다. 실제 실행 방법과 프로젝트 구조는 **개발 환경 구성 PR에서 코드와 함께 추가**합니다.
+### 필요한 도구
 
-### 사용할 도구
+| 도구 | 버전 | 비고 |
+| :--- | --- | --- |
+| Python | **3.12** | Windows는 3.12.10 설치 파일 사용 (3.12.11 이후는 설치 파일이 없음) |
+| Node.js | 24 | npm 포함 |
+| Docker Desktop | 최신 | 로컬 PostgreSQL + pgvector 실행 |
+| Git | 최신 | Windows는 Git Bash 기준으로 안내 |
 
-| 구분 | 도구 |
-| :--- | --- |
-| 백엔드 | Python, Django + Django REST Framework (DRF 기본 토큰 인증) |
-| 프론트엔드 | Node.js, Vue 3 |
-| 데이터베이스 | PostgreSQL + pgvector (로컬은 Docker로 실행) |
-| 외부 API | 식품안전나라 레시피 DB(COOKRCP01), 비전·텍스트 LLM API, 임베딩 API |
+> 컴퓨터에 Python이 여러 버전 있으면 `py -0p`(또는 `py list`)로 3.12가 있는지 확인하고, 가상환경을 `py -3.12`로 만듭니다.
 
-### 레포 구성 방향
+### 처음 한 번 세팅
 
-- 하나의 레포에 `docs/`(문서), `backend/`(Django), `frontend/`(Vue)를 함께 둡니다.
-- Django 앱은 기능 영역(AUTH, INV, REC, COM, SCR, NOTI, RPT 등)에 맞춰 나눕니다.
+**1. 코드 받기**
 
-### 필요한 환경변수
+```bash
+git clone https://github.com/LDomeenik/final.git
+cd final
+git switch develop
+```
+
+**2. 환경변수 파일 만들기** (루트)
+
+```bash
+cp .env.example .env
+```
+
+`.env`에서 `change-me` 세 곳을 채웁니다.
+- `POSTGRES_PASSWORD`와 `DATABASE_URL` 안의 비밀번호는 **같은 값**으로 맞춥니다.
+- `DJANGO_SECRET_KEY`는 아래 명령으로 만든 값을 넣습니다. 개발용이라 컴퓨터마다 달라도 됩니다.
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(50))"
+```
+
+**3. DB 실행** (루트, Docker Desktop 실행 중이어야 함)
+
+```bash
+docker compose up -d
+docker compose ps   # STATUS가 (healthy)면 성공
+```
+
+**4. 백엔드**
+
+```bash
+cd backend
+py -3.12 -m venv .venv          # macOS/Linux: python3.12 -m venv .venv
+source .venv/Scripts/activate   # macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py createsuperuser   # 이메일, 닉네임, 비밀번호
+python manage.py runserver
+```
+
+- http://localhost:8000/api/v1/health/ 에서 `{"status": "ok"}`가 보이면 성공
+- 관리자 페이지: http://localhost:8000/admin/
+
+**5. 프론트엔드** (터미널을 하나 더 열어서)
+
+```bash
+cd frontend
+cp .env.example .env
+npm install
+npm run dev
+```
+
+- http://localhost:5173 에서 화면이 뜨면 성공
+
+### 작업 시작할 때 (매번)
+
+```bash
+# 터미널 1: DB + 백엔드
+git switch develop && git pull
+docker compose up -d
+cd backend && source .venv/Scripts/activate
+pip install -r requirements.txt   # requirements.txt가 바뀌었을 때
+python manage.py migrate          # 다른 사람이 모델을 바꿨을 수 있으므로
+python manage.py runserver
+
+# 터미널 2: 프론트엔드
+cd frontend
+npm install                       # package.json이 바뀌었을 때
+npm run dev
+```
+
+### 커밋 전 확인
+
+```bash
+# 백엔드 (backend/에서)
+ruff check .
+ruff format .
+
+# 프론트엔드 (frontend/에서)
+npm run lint
+npm run format
+```
+
+### 프로젝트 구조
+
+```
+final/
+├── docs/                   # 기획·데이터·기능·화면·API 문서
+├── backend/                # Django + DRF
+│   ├── config/             # 설정(settings), 전체 URL
+│   ├── accounts/           # 회원 (커스텀 User, 시·군·구 Region)
+│   ├── common/             # 공통 에러 형식, health API
+│   ├── requirements.txt
+│   └── pyproject.toml      # ruff 설정
+├── frontend/               # Vue 3 (Vite, Router, Pinia)
+│   └── src/
+│       ├── api/            # axios 공통 설정(client), 토큰 저장, API 함수
+│       ├── router/
+│       └── stores/
+├── docker-compose.yml      # PostgreSQL 16 + pgvector
+└── .env.example            # 환경변수 예시 (실제 값은 .env, 커밋 금지)
+```
+
+- Django 앱은 기능 영역(AUTH, INV, REC, COM, SCR, NOTI, RPT 등)에 맞춰 추가합니다.
+- API 주소는 모두 `/api/v1/`로 시작합니다.
+
+### 환경변수
+
+**루트 `.env`** (백엔드·Docker)
 
 | 환경변수 | 설명 |
 | :--- | --- |
-| `DATABASE_URL` | PostgreSQL 접속 주소 |
+| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT` | Docker DB 설정 |
+| `DJANGO_SECRET_KEY` | Django 암호화 키 (배포용은 새로 만들어 따로 관리) |
+| `DJANGO_DEBUG` | 개발 중 `True` |
+| `DJANGO_ALLOWED_HOSTS` | 접속 허용 주소 |
+| `DATABASE_URL` | PostgreSQL 접속 주소 (비밀번호는 `POSTGRES_PASSWORD`와 같게) |
+| `CORS_ALLOWED_ORIGINS` | 백엔드를 호출할 수 있는 프론트 주소 |
 | `FOODSAFETY_API_KEY` | 식품안전나라 레시피 DB(COOKRCP01) 인증키 |
 | `LLM_API_KEY` | 비전·텍스트 LLM API 키 |
 | `EMBEDDING_API_KEY` | 임베딩 API 키 |
-| `STORAGE_*` | 이미지 저장소 설정 |
 
-> 실제 키 값은 `.env`에만 두고 커밋하지 않습니다. 키는 팀 내부 채널로 공유합니다.
+**`frontend/.env`**
+
+| 환경변수 | 설명 |
+| :--- | --- |
+| `VITE_API_BASE_URL` | 백엔드 API 주소 (기본 `http://localhost:8000/api/v1`) |
+
+> 실제 키 값은 `.env`에만 두고 커밋하지 않습니다. 외부 API 키는 팀 내부 채널로 공유합니다.
+
+### 자주 막히는 점
+
+| 증상 | 해결 |
+| :--- | --- |
+| `manage.py`를 못 찾음 | `backend/` 폴더에서 실행 |
+| DB 접속 실패 (password authentication failed) | `.env`의 `POSTGRES_PASSWORD`와 `DATABASE_URL` 비밀번호가 같은지 확인. 이미 DB를 만든 뒤 비밀번호를 바꿨다면 `docker compose down -v`로 DB를 지우고 다시 실행 (데이터 삭제됨) |
+| 5432 포트가 이미 사용 중 | 다른 PostgreSQL을 끄거나 `.env`의 `POSTGRES_PORT`와 `DATABASE_URL` 포트를 바꿈 |
+| 프론트에서 API 호출 시 CORS 에러 | `.env`의 `CORS_ALLOWED_ORIGINS`에 `http://localhost:5173`이 있는지 확인 |
+| 가상환경 Python 버전이 3.12가 아님 | `.venv`를 지우고 `py -3.12 -m venv .venv`로 다시 만들기 |
 
 ---
 
@@ -177,6 +303,11 @@ type(scope): 요약
 
 ### 백엔드 (Django)
 - 포맷·린트: `ruff` (+ `ruff format`)
+- **주석**
+  - 클래스·함수 위에 한 줄로 무엇인지 적기 (예: `# 시·군·구 기준 목록`)
+  - 모델은 docstring에 필드 목록과 설명 적기
+  - 모델 안은 `# 필드 정의`, `# 데이터베이스 정의`처럼 구역을 나눠 표시
+  - 코드만 봐서 이유를 알기 어려운 줄은 바로 위에 이유를 적기
 - 앱은 기능 영역별로 나누고, 테이블·컬럼 이름은 데이터 명세서를 따름
 - API 경로·응답·에러 형식은 API 명세를 따름 (`/api/v1/...`, 복수형 명사, 이벤트·점수가 따라오는 동작은 `POST .../동작/`)
 - **마이그레이션**
@@ -197,7 +328,7 @@ type(scope): 요약
 
 ## 진행 현황
 
-> 마지막 업데이트: 2026-11-27
+> 마지막 업데이트: 2026-11-28
 
 ### ✅ 완료
 - 서비스 기획서 작성 (팀 프로젝트 MVP 범위로 개편)
@@ -207,6 +338,7 @@ type(scope): 요약
 - API 명세 작성 (DRF 토큰 인증, 통일된 에러 형식, P0 요청·응답 상세, P1 경로·필드)
 - 외부 데이터 확인: 식품안전나라 COOKRCP01 호출 확인 (약 1,156건), 소비기한 참고값은 API가 없어 직접 구축으로 결정
 - 데이터베이스 결정: PostgreSQL + pgvector
+- 개발 환경 구성: Django 5.2 + DRF, Vue 3 + Vite, Docker PostgreSQL 16 + pgvector, 프론트 → 백엔드 연결 확인
 
 ### 0. 문서·개발 환경 세팅
 - [x] 서비스 기획서
@@ -216,11 +348,13 @@ type(scope): 요약
 - [x] 화면 설계 (화면 목록, 와이어프레임)
 - [x] 기능 명세서에 비회원 기능(시작 화면 레시피 보기)·냉장고 드래그 반영
 - [x] API 명세
-- [ ] develop 브랜치 생성, 브랜치 보호 규칙, 이슈·Projects 보드 생성
+- [x] develop 브랜치 생성, 브랜치 보호 규칙
+- [x] Django·Vue 프로젝트 생성, docker-compose(PostgreSQL + pgvector), `.env.example`
+- [x] 커스텀 User 모델 설정 (첫 마이그레이션 전)
+- [x] DRF 토큰 인증·CORS·공통 에러 형식, health API, 프론트 axios 공통 모듈
+- [x] README에 실제 실행 방법·프로젝트 구조 추가
+- [ ] 이슈·Projects 보드 생성
 - [ ] 역할 분담·일정 확정
-- [ ] Django·Vue 프로젝트 생성, docker-compose(PostgreSQL + pgvector), `.env.example`
-- [ ] README에 실제 실행 방법·프로젝트 구조 추가
-- [ ] 커스텀 User 모델 설정 (첫 마이그레이션 전)
 
 ### 1. 데이터 준비
 - [ ] 식품안전나라 인증키 발급
